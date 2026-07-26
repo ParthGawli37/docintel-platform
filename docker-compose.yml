@@ -1,0 +1,45 @@
+# docintel -- local development / self-hosted deployment stack.
+#
+# Services:
+#   qdrant -- vector database (persisted to a named volume)
+#   api    -- the docintel FastAPI service
+#
+# Usage:
+#   cp .env.example .env   # fill in required values first (see TODO(user) markers)
+#   docker compose up --build
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Override QDRANT_URL to point at the compose service, regardless
+      # of what's in .env (which is written for local-without-docker use).
+      QDRANT_URL: http://qdrant:6333
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - docintel_raw:/app/data/raw
+      - docintel_cache:/app/data/cache
+
+volumes:
+  qdrant_data:
+  docintel_raw:
+  docintel_cache:

@@ -1,0 +1,15 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+data/
+tests/fixtures/*.docx
+tests/fixtures/*.pptx
+tests/fixtures/*.xlsx
+tests/fixtures/*.pdf
+tests/fixtures/*.png
+.env
+*.sqlite
