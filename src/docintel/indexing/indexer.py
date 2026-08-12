@@ -99,6 +99,13 @@ class IncrementalIndexer:
         for raw in raw_documents:
             processed = self._pipeline.process(raw)
 
+            # Capture the previous hash before has_changed() so we can
+            # distinguish a first-time index from a re-index. A source with
+            # no registry entry cannot have stale vectors managed by this
+            # indexer, so there is nothing to delete on its first write.
+            previous_hash = await self._hash_registry.get_hash(
+                knowledge_base_id, raw.source_uri
+            )
             changed = await self._hash_registry.has_changed(
                 knowledge_base_id, raw.source_uri, processed.metadata.content_hash
             )
@@ -109,27 +116,29 @@ class IncrementalIndexer:
             any_changed = True
             chunked = await self._pipeline.chunk(processed)
 
-            # Prefer provider-native source filtering so re-indexing scales
-            # with the changed source instead of scanning every chunk in the
-            # knowledge base. Keep a compatibility fallback for custom
-            # VectorStore implementations that predate this optimization.
-            delete_by_source_uri = getattr(self._vector_store, "delete_by_source_uri", None)
-            if delete_by_source_uri is not None:
-                removed_stale_documents = await delete_by_source_uri(
-                    knowledge_base_id, raw.source_uri
-                )
-            else:
-                existing_chunks = await self._vector_store.get_all_chunks(knowledge_base_id)
-                stale_document_ids = {
-                    chunk.document_id
-                    for chunk in existing_chunks
-                    if chunk.metadata.source_uri == raw.source_uri
-                }
-                for document_id in stale_document_ids:
-                    await self._vector_store.delete_by_document_id(
-                        knowledge_base_id, document_id
+            removed_stale_documents = 0
+            if previous_hash is not None:
+                # Prefer provider-native source filtering so re-indexing scales
+                # with the changed source instead of scanning every chunk in the
+                # knowledge base. Keep a compatibility fallback for custom
+                # VectorStore implementations that predate this optimization.
+                delete_by_source_uri = getattr(self._vector_store, "delete_by_source_uri", None)
+                if delete_by_source_uri is not None:
+                    removed_stale_documents = await delete_by_source_uri(
+                        knowledge_base_id, raw.source_uri
                     )
-                removed_stale_documents = len(stale_document_ids)
+                else:
+                    existing_chunks = await self._vector_store.get_all_chunks(knowledge_base_id)
+                    stale_document_ids = {
+                        chunk.document_id
+                        for chunk in existing_chunks
+                        if chunk.metadata.source_uri == raw.source_uri
+                    }
+                    for document_id in stale_document_ids:
+                        await self._vector_store.delete_by_document_id(
+                            knowledge_base_id, document_id
+                        )
+                    removed_stale_documents = len(stale_document_ids)
 
             if chunked.chunks:
                 embedded_chunks = await self._embedder.embed_chunks(chunked.chunks)
