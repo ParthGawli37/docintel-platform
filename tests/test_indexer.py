@@ -41,6 +41,7 @@ class _FakeVectorStore:
     def __init__(self) -> None:
         self.upserted: list[EmbeddedChunk] = []
         self.deleted_document_ids: list[str] = []
+        self.deleted_source_uris: list[str] = []
 
     async def ensure_collection(self, collection, dimensions):
         pass
@@ -56,6 +57,18 @@ class _FakeVectorStore:
         self.upserted = [
             ec for ec in self.upserted if ec.chunk.document_id != document_id
         ]
+
+    async def delete_by_source_uri(self, collection, source_uri):
+        self.deleted_source_uris.append(source_uri)
+        stale_document_ids = {
+            ec.chunk.document_id
+            for ec in self.upserted
+            if ec.chunk.metadata.source_uri == source_uri
+        }
+        self.upserted = [
+            ec for ec in self.upserted if ec.chunk.metadata.source_uri != source_uri
+        ]
+        return len(stale_document_ids)
 
     async def search(self, collection, query_vector, top_k, filters=None):
         return []
@@ -93,6 +106,7 @@ async def test_indexer_indexes_new_source(tmp_path):
     assert result.error is None
     assert embedder.embed_calls == 1
     assert len(vector_store.upserted) == result.chunk_count
+    assert vector_store.deleted_source_uris == []
 
 
 @pytest.mark.asyncio
@@ -107,6 +121,7 @@ async def test_indexer_skips_unchanged_source_on_second_run(tmp_path):
     assert first.skipped is False
     assert second.skipped is True
     assert embedder.embed_calls == 1  # only called once, not on the skip
+    assert vector_store.deleted_source_uris == []
     assert vector_store.deleted_document_ids == []
 
 
@@ -128,7 +143,8 @@ async def test_indexer_removes_stale_chunks_before_reindex(tmp_path):
 
     assert second.skipped is False
     assert embedder.embed_calls == 2
-    assert set(vector_store.deleted_document_ids) == old_document_ids
+    assert vector_store.deleted_source_uris == [str(FIXTURES / "sample.txt")]
+    assert vector_store.deleted_document_ids == []
     assert len(vector_store.upserted) == second.chunk_count
     assert all(
         chunk.document_id not in old_document_ids
