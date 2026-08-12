@@ -35,7 +35,9 @@ async def _request_observability_middleware(
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
     start = time.perf_counter()
+    response: Response | None = None
     structlog.contextvars.clear_contextvars()
     structlog.contextvars.bind_contextvars(
         request_id=request_id,
@@ -44,21 +46,23 @@ async def _request_observability_middleware(
     )
     try:
         response = await call_next(request)
+        return response
     except Exception:
-        logger.exception("request_failed", duration_ms=round((time.perf_counter() - start) * 1000, 2))
+        logger.exception("request_failed")
         raise
     finally:
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
         logger.info(
             "request_complete",
-            status_code=getattr(locals().get("response"), "status_code", 500),
+            status_code=response.status_code if response is not None else 500,
             duration_ms=duration_ms,
         )
         structlog.contextvars.clear_contextvars()
 
-    response.headers["X-Request-ID"] = request_id
-    response.headers["X-Process-Time-Ms"] = str(duration_ms)
-    return response
+        if response is not None:
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Process-Time-Ms"] = str(duration_ms)
+
 
 
 def create_app() -> FastAPI:
@@ -109,6 +113,23 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=200,
             content={"status": "ready", "dependencies": {"qdrant": "ok"}},
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """Return a safe error envelope while preserving the correlation ID."""
+        request_id = getattr(request.state, "request_id", "unknown")
+        logger.exception("unhandled_application_error", request_id=request_id, error_type=type(exc).__name__)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "code": "internal_error",
+                    "message": "An unexpected internal error occurred.",
+                    "request_id": request_id,
+                }
+            },
+            headers={"X-Request-ID": request_id},
         )
 
     return app
