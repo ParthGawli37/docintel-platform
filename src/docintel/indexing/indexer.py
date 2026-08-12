@@ -10,7 +10,12 @@ HashRegistry.set_hash().
 The HashRegistry check happens AFTER processing (so the hash reflects
 cleaned/normalized content, per the staged-pipeline design) but BEFORE
 chunking/embedding -- skipping unchanged documents avoids paying for
-either step, which is the whole point of incremental indexing.
+both steps, which is the whole point of incremental indexing.
+
+When a source changes, the previous vectors for that source are removed
+before the replacement chunks are upserted. Without that cleanup, each
+reindex would leave stale chunks in the collection because Chunk IDs are
+new for each processing pass.
 
 Callers can register invalidate callbacks (e.g. BM25SparseRetriever.invalidate)
 to run after a successful write, so retrievers with their own caches stay
@@ -104,6 +109,28 @@ class IncrementalIndexer:
             any_changed = True
             chunked = await self._pipeline.chunk(processed)
 
+            # Prefer provider-native source filtering so re-indexing scales
+            # with the changed source instead of scanning every chunk in the
+            # knowledge base. Keep a compatibility fallback for custom
+            # VectorStore implementations that predate this optimization.
+            delete_by_source_uri = getattr(self._vector_store, "delete_by_source_uri", None)
+            if delete_by_source_uri is not None:
+                removed_stale_documents = await delete_by_source_uri(
+                    knowledge_base_id, raw.source_uri
+                )
+            else:
+                existing_chunks = await self._vector_store.get_all_chunks(knowledge_base_id)
+                stale_document_ids = {
+                    chunk.document_id
+                    for chunk in existing_chunks
+                    if chunk.metadata.source_uri == raw.source_uri
+                }
+                for document_id in stale_document_ids:
+                    await self._vector_store.delete_by_document_id(
+                        knowledge_base_id, document_id
+                    )
+                removed_stale_documents = len(stale_document_ids)
+
             if chunked.chunks:
                 embedded_chunks = await self._embedder.embed_chunks(chunked.chunks)
                 await self._vector_store.upsert(knowledge_base_id, embedded_chunks)
@@ -117,6 +144,7 @@ class IncrementalIndexer:
                 "indexing_document_complete",
                 source_uri=raw.source_uri,
                 chunk_count=len(chunked.chunks),
+                removed_stale_documents=removed_stale_documents,
             )
 
         if any_changed:

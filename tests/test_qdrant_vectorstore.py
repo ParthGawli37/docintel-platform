@@ -8,13 +8,19 @@ from docintel.vectorstore.qdrant_store import QdrantVectorStore
 DIMENSIONS = 4
 
 
-def _embedded_chunk(content: str, content_hash: str, vector: list[float], doc_id: str = "doc-1") -> EmbeddedChunk:
+def _embedded_chunk(
+    content: str,
+    content_hash: str,
+    vector: list[float],
+    doc_id: str = "doc-1",
+    source_uri: str = "x.txt",
+) -> EmbeddedChunk:
     chunk = Chunk(
         document_id=doc_id,
         content=content,
         chunk_index=0,
         metadata=DocumentMetadata(
-            source_uri="x.txt",
+            source_uri=source_uri,
             source_type=SourceType.TXT,
             content_hash=content_hash,
             knowledge_base_id="kb-1",
@@ -101,6 +107,32 @@ async def test_delete_by_document_id_removes_matching_points(store):
 
     results = await store.search("kb-1", query_vector=[0.0, 1.0, 0.0, 0.0], top_k=5)
     assert all(r.chunk.document_id != "doc-delete" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_delete_by_source_uri_removes_only_matching_source(store):
+    await store.ensure_collection("kb-1", DIMENSIONS)
+    await store.upsert(
+        "kb-1",
+        [
+            _embedded_chunk("old a", "hash-a1", [1.0, 0.0, 0.0, 0.0], doc_id="doc-a", source_uri="a.txt"),
+            _embedded_chunk("old a 2", "hash-a2", [0.9, 0.1, 0.0, 0.0], doc_id="doc-a", source_uri="a.txt"),
+            _embedded_chunk("keep b", "hash-b", [0.0, 1.0, 0.0, 0.0], doc_id="doc-b", source_uri="b.txt"),
+        ],
+    )
+
+    removed = await store.delete_by_source_uri("kb-1", "a.txt")
+
+    assert removed == 2
+    results = await store.search("kb-1", query_vector=[1.0, 0.0, 0.0, 0.0], top_k=5)
+    assert all(r.chunk.metadata.source_uri != "a.txt" for r in results)
+    assert any(r.chunk.metadata.source_uri == "b.txt" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_delete_by_source_uri_returns_zero_for_missing_source(store):
+    await store.ensure_collection("kb-1", DIMENSIONS)
+    assert await store.delete_by_source_uri("kb-1", "missing.txt") == 0
 
 
 @pytest.mark.asyncio

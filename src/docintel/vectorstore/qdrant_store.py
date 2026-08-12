@@ -77,6 +77,35 @@ class QdrantVectorStore:
         )
         logger.info("qdrant_delete_by_document", collection=collection, document_id=document_id)
 
+    async def delete_by_source_uri(self, collection: str, source_uri: str) -> int:
+        """Delete all vectors for one source using a Qdrant payload filter."""
+        exists = await self._client.collection_exists(collection)
+        if not exists:
+            return 0
+
+        source_filter = Filter(
+            must=[FieldCondition(key="source_uri", match=MatchValue(value=source_uri))]
+        )
+        count = await self._client.count(
+            collection_name=collection,
+            count_filter=source_filter,
+            exact=True,
+        )
+        if count.count == 0:
+            return 0
+
+        await self._client.delete(
+            collection_name=collection,
+            points_selector=source_filter,
+        )
+        logger.info(
+            "qdrant_delete_by_source",
+            collection=collection,
+            source_uri=source_uri,
+            point_count=count.count,
+        )
+        return count.count
+
     async def search(
         self,
         collection: str,
