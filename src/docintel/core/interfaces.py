@@ -3,8 +3,8 @@ Protocol (structural interface) definitions for every pluggable component
 in the platform.
 
 Design rule: business logic (pipeline orchestration, indexing, retrieval
-services) depends only on these Protocols, never on a concrete provider
-class directly. Concrete implementations (NVIDIA, Qdrant, tesseract, ...)
+services) depends only on these Protocols, never on a concrete provider class
+ directly. Concrete implementations (NVIDIA, Qdrant, tesseract, ...)
 live in their respective modules and are wired together at the
 composition root (api/main.py's dependency setup).
 
@@ -175,13 +175,18 @@ class VectorStore(Protocol):
 
     async def delete_by_document_id(self, collection: str, document_id: str) -> None: ...
 
+    async def delete_by_source_uri(self, collection: str, source_uri: str) -> int:
+        """Delete all vectors belonging to a source and return the number removed."""
+        ...
+
     async def search(
         self,
         collection: str,
         query_vector: list[float],
         top_k: int,
         filters: dict[str, object] | None = None,
-    ) -> list[SearchResult]: ...
+    ) -> list[SearchResult]:
+        ...
 
     async def get_existing_content_hashes(self, collection: str) -> set[str]:
         """
