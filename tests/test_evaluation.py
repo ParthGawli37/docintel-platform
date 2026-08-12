@@ -1,5 +1,5 @@
 from docintel.core.models import Citation, Chunk, DocumentMetadata, SearchResult, SourceType
-from docintel.evaluation import CitationEvaluation, evaluate_retrieval
+from docintel.evaluation import CitationEvaluation, RetrievalCase, evaluate_dataset, evaluate_retrieval
 
 
 def _result(document_id: str, source_uri: str, score: float) -> SearchResult:
@@ -49,6 +49,30 @@ def test_retrieval_metrics_return_zero_for_no_relevant_documents():
     assert evaluation.recall_at_k == 0.0
     assert evaluation.precision_at_k == 0.0
     assert evaluation.reciprocal_rank == 0.0
+
+
+def test_dataset_evaluation_macro_averages_cases():
+    cases = [
+        RetrievalCase(
+            query="q1",
+            results=[_result("doc-a", "a.txt", 1.0)],
+            relevant_document_ids={"doc-a"},
+            k=1,
+        ),
+        RetrievalCase(
+            query="q2",
+            results=[_result("doc-x", "x.txt", 1.0)],
+            relevant_document_ids={"doc-a"},
+            k=1,
+        ),
+    ]
+
+    report = evaluate_dataset(cases)
+
+    assert report.case_count == 2
+    assert report.mean_recall_at_k == 0.5
+    assert report.mean_precision_at_k == 0.5
+    assert report.mean_reciprocal_rank == 0.5
 
 
 def test_citation_metrics():
