@@ -120,7 +120,7 @@ async def test_indexer_skips_unchanged_source_on_second_run(tmp_path):
 
     assert first.skipped is False
     assert second.skipped is True
-    assert embedder.embed_calls == 1  # only called once, not on the skip
+    assert embedder.embed_calls == 1
     assert vector_store.deleted_source_uris == []
     assert vector_store.deleted_document_ids == []
 
@@ -132,7 +132,7 @@ async def test_indexer_removes_stale_chunks_before_reindex(tmp_path):
     indexer, hash_registry = _make_indexer(tmp_path, embedder, vector_store)
 
     first = await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
-    old_document_ids = {chunk.document_id for chunk in vector_store.upserted}
+    old_document_ids = {embedded.chunk.document_id for embedded in vector_store.upserted}
     assert len(old_document_ids) == 1
 
     await hash_registry.set_hash(
@@ -147,8 +147,8 @@ async def test_indexer_removes_stale_chunks_before_reindex(tmp_path):
     assert vector_store.deleted_document_ids == []
     assert len(vector_store.upserted) == second.chunk_count
     assert all(
-        chunk.document_id not in old_document_ids
-        for chunk in (ec.chunk for ec in vector_store.upserted)
+        embedded.chunk.document_id not in old_document_ids
+        for embedded in vector_store.upserted
     )
     assert first.chunk_count == second.chunk_count
 
@@ -160,7 +160,6 @@ async def test_indexer_reindexes_when_content_changes(tmp_path):
     indexer, hash_registry = _make_indexer(tmp_path, embedder, vector_store)
 
     await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
-    # Simulate a content change by changing the registered hash for this source.
     await hash_registry.set_hash(KB_ID, str(FIXTURES / "sample.txt"), "deliberately-different-hash")
 
     result = await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
@@ -212,7 +211,7 @@ async def test_indexer_does_not_invalidate_on_skip(tmp_path):
 
     await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
     invalidated_kbs.clear()
-    await indexer.index_source(FIXTURES / "sample.txt", KB_ID)  # unchanged -> skip
+    await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
     assert invalidated_kbs == []
 
 
@@ -229,7 +228,6 @@ async def test_index_batch_aggregates_results(tmp_path):
     assert batch.skipped_count == 0
     assert batch.failed_count == 0
 
-    # Second pass over the same sources should all be skipped.
     batch2 = await indexer.index_batch(
         [FIXTURES / "sample.txt", FIXTURES / "sample.md"], KB_ID
     )
