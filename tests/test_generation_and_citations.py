@@ -24,11 +24,6 @@ def _search_result(content: str, source_uri: str = "x.txt", title: str | None = 
     return SearchResult(chunk=chunk, score=score)
 
 
-# ---------------------------------------------------------------------------
-# DefaultCitationBuilder
-# ---------------------------------------------------------------------------
-
-
 def test_citation_builder_satisfies_protocol():
     assert isinstance(DefaultCitationBuilder(), CitationBuilder)
 
@@ -70,11 +65,6 @@ def test_citation_builder_preserves_source_fields():
     assert citations[0].document_id == "doc-1"
 
 
-# ---------------------------------------------------------------------------
-# NvidiaNemotronLLM -- fake stream shaped like AsyncStream[ChatCompletionChunk]
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class _FakeDelta:
     content: str | None = None
@@ -104,23 +94,28 @@ class _FakeStream:
 
 
 class _FakeCompletions:
-    def __init__(self, chunks: list[_FakeChunk]) -> None:
+    def __init__(self, chunks: list[_FakeChunk], failures: int = 0) -> None:
         self._chunks = chunks
+        self._failures = failures
+        self.calls = 0
         self.last_call_kwargs: dict | None = None
 
     async def create(self, **kwargs):
+        self.calls += 1
         self.last_call_kwargs = kwargs
+        if self.calls <= self._failures:
+            raise RuntimeError("transient upstream failure")
         return _FakeStream(self._chunks)
 
 
 class _FakeChat:
-    def __init__(self, chunks: list[_FakeChunk]) -> None:
-        self.completions = _FakeCompletions(chunks)
+    def __init__(self, chunks: list[_FakeChunk], failures: int = 0) -> None:
+        self.completions = _FakeCompletions(chunks, failures=failures)
 
 
 class _FakeAsyncOpenAI:
-    def __init__(self, chunks: list[_FakeChunk]) -> None:
-        self.chat = _FakeChat(chunks)
+    def __init__(self, chunks: list[_FakeChunk], failures: int = 0) -> None:
+        self.chat = _FakeChat(chunks, failures=failures)
 
 
 class _FakeSettings:
@@ -140,6 +135,17 @@ async def test_nemotron_llm_satisfies_protocol():
     client = _FakeAsyncOpenAI(_token_stream("hi"))
     llm = NvidiaNemotronLLM(settings=_FakeSettings(), client=client)  # type: ignore[arg-type]
     assert isinstance(llm, LLM)
+
+
+@pytest.mark.asyncio
+async def test_nemotron_llm_retries_transient_request_failure():
+    client = _FakeAsyncOpenAI(_token_stream("ok"), failures=1)
+    llm = NvidiaNemotronLLM(settings=_FakeSettings(), client=client)  # type: ignore[arg-type]
+
+    texts = [chunk.text async for chunk in llm.stream_generate("q", context=[])]
+
+    assert texts == ["ok", ""]
+    assert client.chat.completions.calls == 2
 
 
 @pytest.mark.asyncio
