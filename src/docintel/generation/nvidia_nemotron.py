@@ -1,16 +1,4 @@
-"""
-NvidiaNemotronLLM: default LLM implementation, streaming chat completions
-from NVIDIA's OpenAI-compatible endpoint via AsyncOpenAI, with
-`stream=True` against the confirmed `chat.completions.create` API shape.
-
-model_id comes from Settings.nvidia_generation_model -- required, unset
-by default (see .env.example's TODO(user) marker), never guessed here.
-
-NOTE ON TESTING: same caveat as NvidiaEmbedder -- this sandbox cannot
-reach api.nvidia.com, so `client` is injectable and tests exercise the
-prompt-building/streaming/citation-attachment logic against a fake async
-iterator shaped like AsyncStream[ChatCompletionChunk], not a live call.
-"""
+"""NVIDIA Nemotron LLM provider with streaming generation and bounded retries."""
 
 from __future__ import annotations
 
@@ -19,6 +7,7 @@ from typing import cast
 
 from openai import AsyncOpenAI, AsyncStream
 from openai.types.chat import ChatCompletionChunk
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from docintel.citations.builder import DefaultCitationBuilder
 from docintel.core.config import Settings
@@ -57,6 +46,20 @@ class NvidiaNemotronLLM:
         )
         self._citation_builder = citation_builder or DefaultCitationBuilder()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
+    async def _create_stream(
+        self,
+        messages: list[dict[str, str]],
+    ) -> AsyncStream[ChatCompletionChunk]:
+        """Create the upstream stream with bounded exponential-backoff retries."""
+        logger.info("generation_request", model=self.model_id)
+        stream = await self._client.chat.completions.create(
+            model=self.model_id,
+            messages=messages,  # type: ignore[arg-type]
+            stream=True,
+        )
+        return cast(AsyncStream[ChatCompletionChunk], stream)
+
     async def stream_generate(
         self,
         query: str,
@@ -65,7 +68,6 @@ class NvidiaNemotronLLM:
     ) -> AsyncIterator[GenerationChunk]:
         citations = self._citation_builder.build(context)
         context_block = _build_context_block(context)
-
         messages = [
             {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM_PROMPT},
             {
@@ -75,15 +77,7 @@ class NvidiaNemotronLLM:
         ]
 
         logger.info("generation_start", model=self.model_id, context_chunk_count=len(context))
-
-        stream = cast(
-            AsyncStream[ChatCompletionChunk],
-            await self._client.chat.completions.create(
-                model=self.model_id,
-                messages=messages,  # type: ignore[arg-type]
-                stream=True,
-            ),
-        )
+        stream = await self._create_stream(messages)
 
         async for event in stream:
             delta = event.choices[0].delta if event.choices else None
