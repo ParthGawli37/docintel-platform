@@ -10,7 +10,12 @@ HashRegistry.set_hash().
 The HashRegistry check happens AFTER processing (so the hash reflects
 cleaned/normalized content, per the staged-pipeline design) but BEFORE
 chunking/embedding -- skipping unchanged documents avoids paying for
-either step, which is the whole point of incremental indexing.
+both steps, which is the whole point of incremental indexing.
+
+When a source changes, the previous vectors for that source are removed
+before the replacement chunks are upserted. Without that cleanup, each
+reindex would leave stale chunks in the collection because Chunk IDs are
+new for each processing pass.
 
 Callers can register invalidate callbacks (e.g. BM25SparseRetriever.invalidate)
 to run after a successful write, so retrievers with their own caches stay
@@ -104,6 +109,20 @@ class IncrementalIndexer:
             any_changed = True
             chunked = await self._pipeline.chunk(processed)
 
+            # Chunk IDs are generated during chunking, so a changed source
+            # gets new point IDs. Remove the old source's chunks first to
+            # prevent stale content from remaining searchable.
+            existing_chunks = await self._vector_store.get_all_chunks(knowledge_base_id)
+            stale_document_ids = {
+                chunk.document_id
+                for chunk in existing_chunks
+                if chunk.metadata.source_uri == raw.source_uri
+            }
+            for document_id in stale_document_ids:
+                await self._vector_store.delete_by_document_id(
+                    knowledge_base_id, document_id
+                )
+
             if chunked.chunks:
                 embedded_chunks = await self._embedder.embed_chunks(chunked.chunks)
                 await self._vector_store.upsert(knowledge_base_id, embedded_chunks)
@@ -117,6 +136,7 @@ class IncrementalIndexer:
                 "indexing_document_complete",
                 source_uri=raw.source_uri,
                 chunk_count=len(chunked.chunks),
+                removed_stale_documents=len(stale_document_ids),
             )
 
         if any_changed:
