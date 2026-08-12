@@ -64,7 +64,6 @@ async def _request_observability_middleware(
             response.headers["X-Process-Time-Ms"] = str(duration_ms)
 
 
-
 def create_app() -> FastAPI:
     app = FastAPI(
         title="docintel",
@@ -103,7 +102,7 @@ def create_app() -> FastAPI:
 
         try:
             await container.qdrant_client.get_collections()
-        except Exception:  # noqa: BLE001 -- readiness must never leak provider internals
+        except Exception:
             logger.exception("readiness_dependency_failed", dependency="qdrant")
             return JSONResponse(
                 status_code=503,
