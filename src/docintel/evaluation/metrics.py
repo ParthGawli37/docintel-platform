@@ -131,7 +131,7 @@ class CitationEvaluation:
     @classmethod
     def from_citations(
         cls, citations: list[Citation], relevant_source_uris: set[str]
-    ) -> "CitationEvaluation":
+    ) -> CitationEvaluation:
         return cls(
             precision=citation_precision(citations, relevant_source_uris),
             recall=citation_recall(citations, relevant_source_uris),
