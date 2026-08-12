@@ -6,8 +6,8 @@ any number of independent **knowledge bases**, each defined purely by
 configuration (a name, an embedding model, a system prompt) — never by
 domain-specific code. The same platform can serve a Portfolio AI
 Assistant, a QA Documentation Assistant, or a Company Knowledge Base
-simply by creating a different knowledge base and pointing it at
-different source documents.
+simply by creating a different knowledge base and pointing it at different
+source documents.
 
 ## Architecture
 
@@ -64,6 +64,7 @@ src/docintel/
 ├── retrieval/       # BM25SparseRetriever, LocalBM25Reranker, HybridRetriever
 ├── generation/      # NvidiaNemotronLLM (streaming)
 ├── citations/       # DefaultCitationBuilder
+├── evaluation/      # deterministic retrieval/citation evaluation metrics
 ├── knowledge_base/  # KnowledgeBaseManager (collection lifecycle)
 ├── indexing/        # IncrementalIndexer (hash-based skip logic)
 └── api/             # FastAPI app, composition root, routers
@@ -139,6 +140,42 @@ uvicorn docintel.api.main:app --host 0.0.0.0 --port 8000
 - `POST /knowledge-bases/{id}/ingest/url` — fetch + incrementally index a web page
 - `POST /knowledge-bases/{id}/query` — hybrid search + streaming generation (SSE),
   citations attached to the final event
+- `GET /health` — process-level liveness check
+- `GET /ready` — dependency-aware readiness check (currently validates Qdrant)
+
+## Reliability and evaluation (V1.5)
+
+- **Request observability**: every API request gets an `X-Request-ID` correlation
+  ID and `X-Process-Time-Ms` response header; lifecycle events are emitted through
+  structured logging.
+- **Safe error handling**: unexpected API failures return a stable error envelope
+  with a correlation ID instead of leaking provider internals.
+- **Bounded retries**: NVIDIA generation requests use exponential backoff with a
+  maximum of three attempts. Embedding requests already use the same policy.
+- **Contract tests**: core provider protocols have structural compatibility tests
+  so replacement implementations can be checked independently of the concrete provider.
+- **Integration/API coverage**: Qdrant runs in memory for real vector-store integration
+  tests, while the API suite exercises knowledge-base CRUD, ingestion and streaming query paths.
+- **Deterministic RAG evaluation**: `docintel.evaluation` provides Recall@K,
+  Precision@K, MRR, citation precision/recall, per-case evaluation and dataset-level
+  macro-averaged reports without requiring an LLM judge.
+
+Example evaluation usage:
+
+```python
+from docintel.evaluation import RetrievalCase, evaluate_dataset
+
+report = evaluate_dataset([
+    RetrievalCase(
+        query="How does authentication work?",
+        results=retrieved_results,
+        relevant_document_ids={"auth-design-doc"},
+        k=5,
+    )
+])
+
+print(report.mean_recall_at_k, report.mean_reciprocal_rank)
+```
 
 ## Testing notes
 
@@ -156,6 +193,8 @@ This sandbox's network allowlist includes PyPI/npm/GitHub but not
 - Everything else (loaders, processing pipeline, chunkers, storage layer,
   retrieval, indexing, the full API) is tested end-to-end with real I/O
   against real fixture files.
+- GitHub Actions runs **Ruff + the full pytest suite + strict mypy** on pull
+  requests and pushes to `main`.
 
 ## Known placeholders requiring user configuration
 
