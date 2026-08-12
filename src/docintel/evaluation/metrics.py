@@ -19,7 +19,7 @@ def _normalize_ids(values: set[str] | list[str] | tuple[str, ...]) -> set[str]:
 def recall_at_k(results: list[SearchResult], relevant_document_ids: set[str], k: int) -> float:
     """Fraction of relevant documents retrieved in the first *k* results."""
     relevant = _normalize_ids(relevant_document_ids)
-    if not relevant:
+    if not relevant or k <= 0:
         return 0.0
     retrieved = {result.chunk.document_id for result in results[:k]}
     return len(retrieved & relevant) / len(relevant)
@@ -58,6 +58,29 @@ class RetrievalEvaluation:
     reciprocal_rank: float
 
 
+@dataclass(frozen=True)
+class RetrievalCase:
+    """Expected retrieval targets for one evaluation query."""
+
+    query: str
+    results: list[SearchResult]
+    relevant_document_ids: set[str]
+    k: int = 5
+
+    def evaluate(self) -> RetrievalEvaluation:
+        return evaluate_retrieval(self.results, self.relevant_document_ids, self.k)
+
+
+@dataclass(frozen=True)
+class EvaluationReport:
+    """Macro-averaged retrieval report over a fixed evaluation dataset."""
+
+    case_count: int
+    mean_recall_at_k: float
+    mean_precision_at_k: float
+    mean_reciprocal_rank: float
+
+
 def evaluate_retrieval(
     results: list[SearchResult], relevant_document_ids: set[str], k: int
 ) -> RetrievalEvaluation:
@@ -65,6 +88,21 @@ def evaluate_retrieval(
         recall_at_k=recall_at_k(results, relevant_document_ids, k),
         precision_at_k=precision_at_k(results, relevant_document_ids, k),
         reciprocal_rank=mean_reciprocal_rank(results, relevant_document_ids),
+    )
+
+
+def evaluate_dataset(cases: list[RetrievalCase]) -> EvaluationReport:
+    """Evaluate a fixed retrieval dataset and macro-average its metrics."""
+    if not cases:
+        return EvaluationReport(0, 0.0, 0.0, 0.0)
+
+    evaluations = [case.evaluate() for case in cases]
+    count = len(evaluations)
+    return EvaluationReport(
+        case_count=count,
+        mean_recall_at_k=sum(item.recall_at_k for item in evaluations) / count,
+        mean_precision_at_k=sum(item.precision_at_k for item in evaluations) / count,
+        mean_reciprocal_rank=sum(item.reciprocal_rank for item in evaluations) / count,
     )
 
 
