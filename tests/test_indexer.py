@@ -40,6 +40,7 @@ class _FakeEmbedder:
 class _FakeVectorStore:
     def __init__(self) -> None:
         self.upserted: list[EmbeddedChunk] = []
+        self.deleted_document_ids: list[str] = []
 
     async def ensure_collection(self, collection, dimensions):
         pass
@@ -51,7 +52,10 @@ class _FakeVectorStore:
         self.upserted.extend(embedded_chunks)
 
     async def delete_by_document_id(self, collection, document_id):
-        pass
+        self.deleted_document_ids.append(document_id)
+        self.upserted = [
+            ec for ec in self.upserted if ec.chunk.document_id != document_id
+        ]
 
     async def search(self, collection, query_vector, top_k, filters=None):
         return []
@@ -103,6 +107,34 @@ async def test_indexer_skips_unchanged_source_on_second_run(tmp_path):
     assert first.skipped is False
     assert second.skipped is True
     assert embedder.embed_calls == 1  # only called once, not on the skip
+    assert vector_store.deleted_document_ids == []
+
+
+@pytest.mark.asyncio
+async def test_indexer_removes_stale_chunks_before_reindex(tmp_path):
+    embedder = _FakeEmbedder()
+    vector_store = _FakeVectorStore()
+    indexer, hash_registry = _make_indexer(tmp_path, embedder, vector_store)
+
+    first = await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
+    old_document_ids = {chunk.document_id for chunk in vector_store.upserted}
+    assert len(old_document_ids) == 1
+
+    await hash_registry.set_hash(
+        KB_ID, str(FIXTURES / "sample.txt"), "deliberately-different-hash"
+    )
+
+    second = await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
+
+    assert second.skipped is False
+    assert embedder.embed_calls == 2
+    assert set(vector_store.deleted_document_ids) == old_document_ids
+    assert len(vector_store.upserted) == second.chunk_count
+    assert all(
+        chunk.document_id not in old_document_ids
+        for chunk in (ec.chunk for ec in vector_store.upserted)
+    )
+    assert first.chunk_count == second.chunk_count
 
 
 @pytest.mark.asyncio
@@ -112,7 +144,7 @@ async def test_indexer_reindexes_when_content_changes(tmp_path):
     indexer, hash_registry = _make_indexer(tmp_path, embedder, vector_store)
 
     await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
-    # Simulate a content change by clearing the registered hash for this source.
+    # Simulate a content change by changing the registered hash for this source.
     await hash_registry.set_hash(KB_ID, str(FIXTURES / "sample.txt"), "deliberately-different-hash")
 
     result = await indexer.index_source(FIXTURES / "sample.txt", KB_ID)
