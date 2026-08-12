@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from docintel.core.interfaces import CitationBuilder, Embedder, Loader, VectorStore
-from docintel.core.models import Citation, Chunk, EmbeddedChunk, RawDocument, SearchResult
+from docintel.core.models import Chunk, Citation, EmbeddedChunk, RawDocument, SearchResult
 
 
 class _Loader:
