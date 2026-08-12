@@ -109,19 +109,27 @@ class IncrementalIndexer:
             any_changed = True
             chunked = await self._pipeline.chunk(processed)
 
-            # Chunk IDs are generated during chunking, so a changed source
-            # gets new point IDs. Remove the old source's chunks first to
-            # prevent stale content from remaining searchable.
-            existing_chunks = await self._vector_store.get_all_chunks(knowledge_base_id)
-            stale_document_ids = {
-                chunk.document_id
-                for chunk in existing_chunks
-                if chunk.metadata.source_uri == raw.source_uri
-            }
-            for document_id in stale_document_ids:
-                await self._vector_store.delete_by_document_id(
-                    knowledge_base_id, document_id
+            # Prefer provider-native source filtering so re-indexing scales
+            # with the changed source instead of scanning every chunk in the
+            # knowledge base. Keep a compatibility fallback for custom
+            # VectorStore implementations that predate this optimization.
+            delete_by_source_uri = getattr(self._vector_store, "delete_by_source_uri", None)
+            if delete_by_source_uri is not None:
+                removed_stale_documents = await delete_by_source_uri(
+                    knowledge_base_id, raw.source_uri
                 )
+            else:
+                existing_chunks = await self._vector_store.get_all_chunks(knowledge_base_id)
+                stale_document_ids = {
+                    chunk.document_id
+                    for chunk in existing_chunks
+                    if chunk.metadata.source_uri == raw.source_uri
+                }
+                for document_id in stale_document_ids:
+                    await self._vector_store.delete_by_document_id(
+                        knowledge_base_id, document_id
+                    )
+                removed_stale_documents = len(stale_document_ids)
 
             if chunked.chunks:
                 embedded_chunks = await self._embedder.embed_chunks(chunked.chunks)
@@ -136,7 +144,7 @@ class IncrementalIndexer:
                 "indexing_document_complete",
                 source_uri=raw.source_uri,
                 chunk_count=len(chunked.chunks),
-                removed_stale_documents=len(stale_document_ids),
+                removed_stale_documents=removed_stale_documents,
             )
 
         if any_changed:
