@@ -1,5 +1,10 @@
-from docintel.core.models import Citation, Chunk, DocumentMetadata, SearchResult, SourceType
-from docintel.evaluation import CitationEvaluation, RetrievalCase, evaluate_dataset, evaluate_retrieval
+from docintel.core.models import Chunk, Citation, DocumentMetadata, SearchResult, SourceType
+from docintel.evaluation import (
+    CitationEvaluation,
+    RetrievalCase,
+    evaluate_dataset,
+    evaluate_retrieval,
+)
 
 
 def _result(document_id: str, source_uri: str, score: float) -> SearchResult:
