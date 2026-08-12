@@ -23,13 +23,6 @@ def _chunk(content: str, content_hash: str, chunk_index: int = 0) -> Chunk:
     )
 
 
-# ---------------------------------------------------------------------------
-# NvidiaEmbedder -- against a fake client shaped like the real OpenAI SDK
-# response (openai.types.CreateEmbeddingResponse / Embedding), since this
-# sandbox cannot reach api.nvidia.com for a live call.
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class _FakeEmbeddingItem:
     embedding: list[float]
@@ -45,9 +38,16 @@ class _FakeEmbeddingsResource:
     def __init__(self, responder):
         self._responder = responder
         self.calls: list[list[str]] = []
+        self.input_types: list[str | None] = []
 
-    async def create(self, model: str, input: list[str]):
+    async def create(
+        self,
+        model: str,
+        input: list[str],
+        extra_body: dict[str, str] | None = None,
+    ):
         self.calls.append(list(input))
+        self.input_types.append(extra_body.get("input_type") if extra_body else None)
         return self._responder(model, input)
 
 
@@ -88,6 +88,7 @@ async def test_nvidia_embedder_reorders_response_by_index():
 
     assert [e.vector for e in embedded] == [[0.0] * 4, [1.0] * 4, [2.0] * 4]
     assert all(e.model_id == "fake/embed-model" for e in embedded)
+    assert client.embeddings.input_types == ["passage"]
 
 
 @pytest.mark.asyncio
@@ -98,9 +99,9 @@ async def test_nvidia_embedder_batches_requests():
     chunks = [_chunk(f"text-{i}", f"hash-{i}", i) for i in range(5)]
     await embedder.embed_chunks(chunks)
 
-    # 5 chunks with batch_size=2 -> 3 API calls (2, 2, 1)
     assert len(client.embeddings.calls) == 3
     assert [len(c) for c in client.embeddings.calls] == [2, 2, 1]
+    assert client.embeddings.input_types == ["passage", "passage", "passage"]
 
 
 @pytest.mark.asyncio
@@ -109,6 +110,7 @@ async def test_nvidia_embedder_embed_query():
     embedder = NvidiaEmbedder(settings=_FakeSettings(), client=client)  # type: ignore[arg-type]
     vector = await embedder.embed_query("hello")
     assert vector == [0.0] * 4
+    assert client.embeddings.input_types == ["query"]
 
 
 @pytest.mark.asyncio
@@ -118,12 +120,6 @@ async def test_nvidia_embedder_empty_chunks_returns_empty_without_api_call():
     result = await embedder.embed_chunks([])
     assert result == []
     assert client.embeddings.calls == []
-
-
-# ---------------------------------------------------------------------------
-# CachedEmbedder -- against a real SqliteEmbeddingCache, with a fake inner
-# Embedder that records how many times it was actually called.
-# ---------------------------------------------------------------------------
 
 
 class _CountingFakeEmbedder:
@@ -174,10 +170,9 @@ async def test_cached_embedder_skips_inner_on_second_request_same_hash(tmp_path)
     cached = CachedEmbedder(inner, cache)
 
     await cached.embed_chunks([_chunk("hello", "hash-1")])
-    # Different chunk object/id, SAME content_hash -- should hit cache.
     result2 = await cached.embed_chunks([_chunk("hello again", "hash-1", chunk_index=1)])
 
-    assert len(inner.embed_chunks_calls) == 1  # inner never called a second time
+    assert len(inner.embed_chunks_calls) == 1
     assert result2[0].vector == [1.0, 2.0, 3.0]
 
 
@@ -187,17 +182,17 @@ async def test_cached_embedder_mixed_hits_and_misses_preserves_order(tmp_path):
     cache = SqliteEmbeddingCache(tmp_path / "cache.sqlite")
     cached = CachedEmbedder(inner, cache)
 
-    await cached.embed_chunks([_chunk("a", "hash-a")])  # populate cache for hash-a
+    await cached.embed_chunks([_chunk("a", "hash-a")])
 
     chunks = [
-        _chunk("a-again", "hash-a", chunk_index=0),  # cache hit
-        _chunk("b", "hash-b", chunk_index=1),         # cache miss
+        _chunk("a-again", "hash-a", chunk_index=0),
+        _chunk("b", "hash-b", chunk_index=1),
     ]
     result = await cached.embed_chunks(chunks)
 
-    assert [r.chunk.id for r in result] == [chunks[0].id, chunks[1].id]  # order preserved
-    assert inner.embed_chunks_calls[-1] == [chunks[1].id]  # only the miss went to inner on this call
-    assert len(inner.embed_chunks_calls) == 2  # one from setup, one from the miss above
+    assert [r.chunk.id for r in result] == [chunks[0].id, chunks[1].id]
+    assert inner.embed_chunks_calls[-1] == [chunks[1].id]
+    assert len(inner.embed_chunks_calls) == 2
 
 
 @pytest.mark.asyncio
