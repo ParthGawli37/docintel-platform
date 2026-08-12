@@ -1,10 +1,18 @@
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from docintel.api.main import _request_observability_middleware
+
+def _configure_test_environment(monkeypatch) -> None:
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setenv("NVIDIA_GENERATION_MODEL", "fake/generation")
+    monkeypatch.setenv("NVIDIA_EMBEDDING_MODEL", "fake/embedding")
+    monkeypatch.setenv("NVIDIA_EMBEDDING_DIMENSIONS", "4")
 
 
-async def test_request_observability_adds_request_id_and_timing_headers():
+async def test_request_observability_adds_request_id_and_timing_headers(monkeypatch):
+    _configure_test_environment(monkeypatch)
+    from docintel.api.main import _request_observability_middleware
+
     app = FastAPI()
     app.middleware("http")(_request_observability_middleware)
 
@@ -21,7 +29,10 @@ async def test_request_observability_adds_request_id_and_timing_headers():
     assert float(response.headers["X-Process-Time-Ms"]) >= 0
 
 
-async def test_request_observability_generates_request_id_when_missing():
+async def test_request_observability_generates_request_id_when_missing(monkeypatch):
+    _configure_test_environment(monkeypatch)
+    from docintel.api.main import _request_observability_middleware
+
     app = FastAPI()
     app.middleware("http")(_request_observability_middleware)
 
